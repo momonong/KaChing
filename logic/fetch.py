@@ -4,13 +4,8 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
-
-
 FINMIND_BASE_URL = os.getenv("FINMIND_BASE_URL")
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN")
-
-print(FINMIND_BASE_URL)
-print(FINMIND_TOKEN)
 
 
 def get_dataset(
