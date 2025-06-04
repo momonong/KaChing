@@ -1,4 +1,4 @@
-from logic.fetch import (
+from tools.fetch import (
     fetch_stock_price,
     fetch_institutional_investors,
     fetch_financial_statement,
