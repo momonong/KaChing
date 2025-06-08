@@ -1,4 +1,3 @@
-# node/decide_fetch/handler.py
 import json
 from node.decide_fetch.tools import get_registry
 
@@ -13,30 +12,31 @@ def dataframe_to_json_summary(df):
 
 def handle_tool_calls(tool_calls):
     tool_messages = []
-    state_updates = {}
+    state_updates = {"fetch_results": {}}  # 改成集中到這裡
 
     for tool_call in tool_calls:
         tool_name = tool_call.function.name
+        args = json.loads(tool_call.function.arguments)
+
         fetch_fn = FUNCTION_REGISTRY.get(tool_name)
+        if not fetch_fn:
+            print(f"⚠️ 工具未註冊: {tool_name}")
+            continue
 
-        if fetch_fn:
-            args = json.loads(tool_call.function.arguments)
-            df = fetch_fn(**args)
-            print(f"📊 Fetched data from {tool_name}: {df.shape}")
+        df = fetch_fn(**args)
 
-            json_data = dataframe_to_json_summary(df)
-
-            tool_messages.append({
+        summary_json = dataframe_to_json_summary(df)
+        tool_messages.append(
+            {
                 "tool_call_id": tool_call.id,
                 "role": "tool",
                 "name": tool_name,
-                "content": json_data,
-            })
+                "content": summary_json,
+            }
+        )
 
-            # 將資料直接放入 state
-            key = f"df_{tool_name.replace('fetch_', '')}"
-            state_updates[key] = df
-        else:
-            print(f"⚠️ 未註冊工具: {tool_name}")
+        # 儲存進 fetch_results 字典，以工具名去除 fetch_ 為 key
+        result_key = tool_name.replace("fetch_", "")  # 如 stock_price
+        state_updates["fetch_results"][result_key] = df
 
     return tool_messages, state_updates
