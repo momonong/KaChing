@@ -1,6 +1,5 @@
 # node/decide_fetch/tools.py
 import inspect
-import json
 from node.decide_fetch import logic
 
 def get_tools():
