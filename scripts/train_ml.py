@@ -1,6 +1,7 @@
 import pandas as pd
 from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
+# from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier # <-- 新增這行
 from sklearn.metrics import accuracy_score, classification_report
 
 # --- 機器學習基礎 1: 載入並定義特徵 (X) 與目標 (y) ---
@@ -17,6 +18,9 @@ target = 'target'
 # X 是我們的「問題」(特徵)，y 是我們的「答案」(目標)
 X = data[features]
 y = data[target]
+# XGBoost expects class labels to be 0, 1, 2 for a 3-class problem.
+# Our current labels are -1, 0, 1. We need to map them.
+y = y.map({-1: 0, 0: 1, 1: 2})
 
 print(f"[INFO] Features (X) shape: {X.shape}")
 print(f"[INFO] Target (y) shape: {y.shape}")
@@ -43,8 +47,13 @@ print(f"  - Testing set size: {len(X_test)}")
 # 我們選擇「隨機森林分類器 (RandomForestClassifier)」作為第一個模型。
 # 為什麼？ 它是一個非常強大且通用的模型，由多個「決策樹」組成，不容易過擬合，效果通常很好。
 # n_estimators=100 代表這個「森林」由 100 棵樹組成。
-print("\n[INFO] Training the RandomForestClassifier model...")
-model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+# print("\n[INFO] Training the RandomForestClassifier model...")
+# model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+###################################################################################################
+# 我們這次選擇「XGBoost 分類器」
+# 它是一種更複雜、通常也更精準的樹模型集成演算法
+print("\n[INFO] Training the XGBClassifier model...")
+model = XGBClassifier(use_label_encoder=False, eval_metric='mlogloss', random_state=42) # <-- 替換模型
 
 # .fit() 就是「訓練」的指令，模型會從 X_train 和 y_train 中學習規律
 model.fit(X_train, y_train)

@@ -8,6 +8,7 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+	"poethepoet",
     "pandas (>=2.2.3,<3.0.0)",
     "requests (>=2.32.3,<3.0.0)",
     "python-dotenv (>=1.1.0,<2.0.0)",
@@ -17,10 +18,16 @@ dependencies = [
     "tabulate (>=0.9.0,<0.10.0)",
     "pandas-ta (>=0.4.67b0,<0.5.0)",
     "finmind (>=1.8.2,<2.0.0)",
-    "scikit-learn (>=1.7.2,<2.0.0)"
+    "scikit-learn (>=1.7.2,<2.0.0)",
+    "xgboost (>=3.0.5,<4.0.0)",
+    "groq (>=0.31.1,<0.32.0)"
 ]
 
+[tool.poetry.dependencies]
+torch = "*"
+poethepoet = "*"
 
-[build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
-build-backend = "poetry.core.masonry.api"
+[tool.poe.tasks]
+install-ltt = "python3 -m pip install light-the-torch"
+run-ltt = "python3 -m light_the_torch install --upgrade torch torchaudio torchvision"
+autoinstall-torch-cuda = ["install-ltt", "run-ltt"]
