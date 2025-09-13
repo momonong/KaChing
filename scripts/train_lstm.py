@@ -7,23 +7,29 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import classification_report
 from sklearn.utils.class_weight import compute_class_weight
 
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"[INFO] Using device: {device}")
+
 # --- LSTM 基礎 1: 創建時間序列數據集 ---
 # 這是與 MLP 最大的不同之處。我們需要將數據從 (樣本數, 特徵數) 轉換為 (樣本數, 時間窗長度, 特徵數)
-def create_sequences(features, labels, seq_length):
+# --- 關鍵改造點：分組創建序列 ---
+def create_sequences_grouped(data, features_cols, labels_col, seq_length):
     xs, ys = [], []
-    for i in range(len(features) - seq_length):
-        # x 是從 i 到 i+seq_length 的特徵序列
-        x = features[i:(i + seq_length)]
-        # y 是第 i+seq_length 天的標籤
-        y = labels[i + seq_length]
-        xs.append(x)
-        ys.append(y)
+    # 使用 groupby 來確保序列不會跨越不同的股票
+    for stock_id, group in data.groupby('stock_id'):
+        features = group[features_cols].values
+        labels = group[labels_col].values
+        for i in range(len(features) - seq_length):
+            x = features[i:(i + seq_length)]
+            y = labels[i + seq_length]
+            xs.append(x)
+            ys.append(y)
     return np.array(xs), np.array(ys)
 
 # --- 數據準備 ---
 print("[INFO] Loading and preparing data for LSTM...")
 
-data = pd.read_csv('data/final_data.csv', index_col='date', parse_dates=True)
+data = pd.read_csv('data/final_data_multi.csv', index_col='date', parse_dates=True)
 features_cols = ['SMA_10', 'SMA_20', 'RSI_14', 'MACD_12_26_9', 'MACDh_12_26_9', 'MACDs_12_26_9']
 target_col = 'target'
 
@@ -33,7 +39,7 @@ data[features_cols] = scaler.fit_transform(data[features_cols])
 
 # 創建序列數據
 sequence_length = 10  # 我們讓模型一次回看過去 10 天的數據
-X, y = create_sequences(data[features_cols].values, data[target_col].values, sequence_length)
+X, y = create_sequences_grouped(data, features_cols, 'target', sequence_length)
 
 # 我們的 target 是 -1, 0, 1，PyTorch 需要 0, 1, 2
 y = y + 1
@@ -44,10 +50,10 @@ X_train, X_test, y_train, y_test = train_test_split(
 )
 
 # 轉換為 PyTorch Tensors
-X_train_tensor = torch.FloatTensor(X_train)
-y_train_tensor = torch.LongTensor(y_train)
-X_test_tensor = torch.FloatTensor(X_test)
-y_test_tensor = torch.LongTensor(y_test)
+X_train_tensor = torch.FloatTensor(X_train).to(device)
+y_train_tensor = torch.LongTensor(y_train).to(device)
+X_test_tensor = torch.FloatTensor(X_test).to(device)
+y_test_tensor = torch.LongTensor(y_test).to(device)
 
 # --- LSTM 基礎 2: 定義 LSTM 模型架構 ---
 print("[INFO] Defining the LSTM model architecture...")
@@ -82,17 +88,18 @@ hidden_size = 50                 # LSTM 記憶單元的大小 (可調超參數)
 num_layers = 2                   # 堆疊 2 層 LSTM (可調超參數)
 num_classes = 3                  # 輸出類別數
 model = LSTMModel(input_size, hidden_size, num_layers, num_classes)
+model.to(device)
 
 # --- 損失函數 (帶權重) 與優化器 ---
 print("[INFO] Defining loss function with class weights and optimizer...")
 class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
-class_weights_tensor = torch.tensor(class_weights, dtype=torch.float)
+class_weights_tensor = torch.tensor(class_weights, dtype=torch.float).to(device)
 criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
 # --- 訓練模型 ---
 print("[INFO] Starting model training...")
-epochs = 700 # LSTM 通常收斂得更快，我們先用 200 次
+epochs = 1800 # LSTM 通常收斂得更快，我們先用 200 次
 
 for epoch in range(epochs):
     model.train()
@@ -119,6 +126,6 @@ with torch.no_grad():
     print(f"\n  - Accuracy: {accuracy:.4f}")
     
     print("\n  - Classification Report:")
-    y_pred_np = predicted.numpy()
-    y_test_np = y_test_tensor.numpy()
+    y_pred_np = predicted.cpu().numpy()
+    y_test_np = y_test_tensor.cpu().numpy()
     print(classification_report(y_test_np, y_pred_np, target_names=['Sell (-1)', 'Hold (0)', 'Buy (1)']))
