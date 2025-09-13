@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import numpy as np
 import torch
@@ -45,9 +46,15 @@ X, y = create_sequences_grouped(data, features_cols, 'target', sequence_length)
 y = y + 1
 
 # 切分數據集
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42, stratify=y
-)
+print("[INFO] Splitting data chronologically...")
+split_ratio = 0.8
+split_point = int(len(X) * split_ratio)
+
+X_train, X_test = X[:split_point], X[split_point:]
+y_train, y_test = y[:split_point], y[split_point:]
+
+print(f"  - Training set size: {len(X_train)}")
+print(f"  - Testing set size: {len(X_test)}")
 
 # 轉換為 PyTorch Tensors
 X_train_tensor = torch.FloatTensor(X_train).to(device)
@@ -110,7 +117,7 @@ for epoch in range(epochs):
     loss.backward()
     optimizer.step()
     
-    if (epoch + 1) % 10 == 0:
+    if (epoch + 1) % 50 == 0:
         print(f'Epoch [{epoch+1}/{epochs}], Loss: {loss.item():.4f}')
 
 print("[SUCCESS] Model training completed.")
@@ -129,3 +136,11 @@ with torch.no_grad():
     y_pred_np = predicted.cpu().numpy()
     y_test_np = y_test_tensor.cpu().numpy()
     print(classification_report(y_test_np, y_pred_np, target_names=['Sell (-1)', 'Hold (0)', 'Buy (1)']))
+
+# --- 保存模型 ---
+print("\n[INFO] Saving the trained model to model/lstm_multi_stock.pth...")
+# 我們只保存模型的「狀態字典 (state_dict)」，這是最高效的方式
+if not os.path.exists('model'):
+    os.makedirs('model')
+torch.save(model.state_dict(), 'model/lstm_multi_stock.pth')
+print("[SUCCESS] Model saved.")
