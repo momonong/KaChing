@@ -1,130 +1,89 @@
-# In scripts/backtest.py
-import math
 import pandas as pd
 import numpy as np
 import torch
 import torch.nn as nn
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
+from scripts.model import LSTMModel
 
-# --- 步驟 1: 複製必要的定義 ---
-# 我們需要和 train_lstm.py 完全相同的模型架構和數據處理函數，才能正確地載入模型和數據
+# --- 步驟 1: 複製與訓練時完全相同的定義 ---
 
 def create_sequences_grouped(data, features_cols, labels_col, seq_length):
     xs, ys, info = [], [], []
-    for stock_id, group in data.groupby('stock_id'):
+    for stock_id, group in data.groupby("stock_id"):
         features = group[features_cols].values
         labels = group[labels_col].values
         dates = group.index
-        stock_ids = group['stock_id'].values
-        close_prices = group['Close'].values
+        stock_ids = group["stock_id"].values
+        # 【修正點 1】: 使用標準化後的小寫 'close'
+        close_prices = group["close"].values
 
         for i in range(len(features) - seq_length):
-            x = features[i:(i + seq_length)]
+            x = features[i : (i + seq_length)]
             y = labels[i + seq_length]
             xs.append(x)
             ys.append(y)
-            # 我們額外保存日期、股價和ID，方便回測時對應
-            info.append({
-                'date': dates[i + seq_length],
-                'stock_id': stock_ids[i + seq_length],
-                'price': close_prices[i + seq_length]
-            })
+            info.append(
+                {
+                    "date": dates[i + seq_length],
+                    "stock_id": stock_ids[i + seq_length],
+                    "price": close_prices[i + seq_length],
+                }
+            )
     return np.array(xs), np.array(ys), pd.DataFrame(info)
-
-class PositionalEncoding(nn.Module):
-    # ... (請將完整的 class 內容貼在這裡) ...
-    def __init__(self, d_model, dropout=0.1, max_len=5000):
-        super(PositionalEncoding, self).__init__()
-        self.dropout = nn.Dropout(p=dropout)
-        position = torch.arange(max_len).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
-        pe = torch.zeros(max_len, 1, d_model)
-        pe[:, 0, 0::2] = torch.sin(position * div_term)
-        pe[:, 0, 1::2] = torch.cos(position * div_term)
-        self.register_buffer('pe', pe)
-
-    def forward(self, x):
-        x = x + self.pe[:x.size(0)]
-        return self.dropout(x)
-
-class TransformerModel(nn.Module):
-    # ... (請將完整的 class 內容貼在這裡) ...
-    def __init__(self, input_size, d_model, nhead, num_encoder_layers, num_classes, dropout=0.5):
-        super(TransformerModel, self).__init__()
-        self.model_type = 'Transformer'
-        self.src_mask = None
-        self.input_fc = nn.Linear(input_size, d_model)
-        self.pos_encoder = PositionalEncoding(d_model, dropout)
-        encoder_layers = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dropout=dropout, batch_first=True)
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layers, num_layers=num_encoder_layers)
-        self.d_model = d_model
-        self.classifier = nn.Linear(d_model, num_classes)
-
-    def forward(self, src):
-        src = self.input_fc(src)
-        src = src.permute(1, 0, 2)
-        src = self.pos_encoder(src)
-        src = src.permute(1, 0, 2)
-        output = self.transformer_encoder(src, self.src_mask)
-        output = output.mean(dim=1)
-        output = self.classifier(output)
-        return output
 
 # --- 步驟 2: 載入數據和模型 ---
 print("[INFO] Setting up environment and loading data...")
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-data = pd.read_csv('data/final_data_multi.csv', index_col='date', parse_dates=True)
-features_cols = ['SMA_10', 'SMA_20', 'RSI_14', 'MACD_12_26_9', 'MACDh_12_26_9', 'MACDs_12_26_9']
-target_col = 'target'
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# 特徵縮放 (注意：這裡我們用全部數據來 fit_transform，在真實部署時應只用訓練集fit)
+# 【修正點 3】: 讀取帶有增強特徵的數據檔案
+data = pd.read_csv("data/final_data_multi_enhanced.csv", index_col="date", parse_dates=True)
+features_cols = [
+    'SMA_10', 'SMA_20', 'RSI_14', 
+    'MACD_12_26_9', 'MACDh_12_26_9', 'MACDs_12_26_9',
+    'BBL_20_2.0_2.0', 'BBM_20_2.0_2.0', 'BBU_20_2.0_2.0', 'BBB_20_2.0_2.0', 'BBP_20_2.0_2.0',
+    'OBV', 
+    'TAIEX_return'
+]
+target_col = "target"
+
 scaler = StandardScaler()
 data[features_cols] = scaler.fit_transform(data[features_cols])
 
-# 創建序列數據，這次我們需要 info DataFrame
 sequence_length = 10
-X, y, info_df = create_sequences_grouped(data, features_cols, target_col, sequence_length)
+X, y, info_df = create_sequences_grouped(
+    data, features_cols, target_col, sequence_length
+)
 y = y + 1
 
-# 進行與訓練時完全相同的數據切分，以確保測試集一致
-# 【新方法 - 時序分割】
-# 為了確保回測的公平性，我們嚴格按照時間順序分割數據。
-# 我們用前 80% 的數據進行訓練 (在 train_lstm.py 中)，用後 20% 的數據進行回測。
-print("[INFO] Splitting data chronologically to get the test set...")
-split_ratio = 0.8
-split_point = int(len(X) * split_ratio)
+# 採用與訓練時完全一致的三向時序分割，以獲取正確的測試集
+# --- 【修正點 1】: 採用嚴格的時序分割 ---
+print("[INFO] Splitting data chronologically...")
+train_split_point = int(len(X) * 0.70)
+val_split_point = int(len(X) * 0.85)
 
-# 我們在回測腳本中，只關心分割點之後的「測試集」
-X_test = X[split_point:]
-y_test = y[split_point:]
-# 對於 DataFrame，我們使用 .iloc 來進行基於位置的切片
-info_test = info_df.iloc[split_point:]
+# 在回測腳本中，我們只關心測試集的數據
+X_test = X[val_split_point:]
+y_test = y[val_split_point:]
+info_test = info_df.iloc[val_split_point:]
 
-print(f"  - Total sequences: {len(X)}")
-print(f"  - Training sequences (for reference): {split_point}")
-print(f"  - Test sequences: {len(X_test)}")
-
-# 檢查時間是否連續
-train_last_date = info_df.iloc[split_point - 1]['date']
+print(f"  - Test set size: {len(X_test)}")
+train_last_date = info_df.iloc[val_split_point - 1]['date']
 test_first_date = info_test.iloc[0]['date']
-print(f"  - Last training date: {train_last_date.date()}")
-print(f"  - First testing date: {test_first_date.date()}")
+print(f"  - Data before {train_last_date.date()} is used for training/validation.")
+print(f"  - Backtest starts from {test_first_date.date()}.")
 
 # 載入模型
-print("[INFO] Loading pre-trained Transformer model...")
-# 【修改】使用 Transformer 的參數來實例化模型
-input_size = len(features_cols)
-d_model = 64
-nhead = 8
-num_encoder_layers = 3
-num_classes = 3
-model = TransformerModel(input_size, d_model, nhead, num_encoder_layers, num_classes)
-
-# 【修改】載入 Transformer 的權重檔案
-model.load_state_dict(torch.load('model/transformer_multi_stock.pth'))
+print("[INFO] Loading pre-trained LSTM model...")
+# --- 【修正點 2】: 使用與我們最新訓練的模型完全一致的超參數 ---
+# 這是我們 train_lstm_advanced.py 中使用的參數
+model = LSTMModel(input_size=len(features_cols), hidden_size=128, num_layers=3, num_classes=3, dropout_rate=0.3)
+# 載入我們用專業流程訓練出的最佳模型
+# 注意：這裡假設您要回測的是 advanced 版本的模型
+model.load_state_dict(torch.load("model/best_lstm_model_pro.pth"))
 model.to(device)
 model.eval()
+
 
 # --- 步驟 3: 獲取模型預測 ---
 print("[INFO] Getting model predictions on the test set...")
@@ -133,94 +92,121 @@ with torch.no_grad():
     outputs = model(X_test_tensor)
     _, predicted = torch.max(outputs.data, 1)
 
-# 將預測結果(-1, 0, 1)合併回 info_test DataFrame
 info_test = info_test.copy()
-info_test['prediction'] = predicted.cpu().numpy() - 1
+info_test["prediction"] = predicted.cpu().numpy() - 1
 
-# --- 步驟 4: 執行回測模擬 ---
+# --- 步驟 4: 執行回測模擬 (專業重構版) ---
 print("[INFO] Starting backtest simulation...")
 
+# 【新】建立一個方便查詢的「訊號字典」，格式：{(日期, 股票ID): 預測訊號}
+signals_dict = {
+    (row['date'], row['stock_id']): row['prediction'] 
+    for _, row in info_test.iterrows()
+}
+
+# 【新】建立一個方便查詢的「每日價格表」
+price_pivot = data.pivot_table(index='date', columns='stock_id', values='close')
+
+# 初始化投資組合
 initial_cash = 1000000
 cash = initial_cash
-holdings = {} # 用來記錄持有每支股票的數量
+holdings = {stock_id: 0 for stock_id in data['stock_id'].unique()}
 portfolio_values = []
 
-# 按日期排序，模擬時間推進
-test_dates = sorted(info_test['date'].unique())
-
+# 按日期推進模擬
+test_dates = sorted(info_test["date"].unique())
 for date in test_dates:
-    # 當日資產價值 = 現金 + 持有股票總市值
+    # --- 1. 計算當日開盤時的資產 ---
     current_portfolio_value = cash
     for stock_id, shares in holdings.items():
-        # 用當日收盤價計算股票市值 (如果當天沒有該股票數據，則用前一天的)
-        price = info_test[(info_test['date'] == date) & (info_test['stock_id'] == stock_id)]['price'].values
-        if len(price) > 0:
-            current_portfolio_value += shares * price[0]
+        # 從價格表中獲取當日價格，如果當天沒開盤(NaN)，則沿用前一天的價格
+        price = price_pivot.loc[date, stock_id]
+        if pd.isna(price): # 如果當天價格缺失，找到最近的一個有效價格
+            last_valid_price = price_pivot[stock_id].loc[:date].last_valid_index()
+            if last_valid_price is not None:
+                price = price_pivot.loc[last_valid_price, stock_id]
+        
+        if pd.notna(price):
+            current_portfolio_value += shares * price
     portfolio_values.append(current_portfolio_value)
 
-    # 獲取當天的所有交易訊號
-    signals_today = info_test[info_test['date'] == date]
+    # --- 2. 執行交易 ---
+    stocks_with_signals_today = [key[1] for key in signals_dict if key[0] == date]
     
     # 賣出操作
-    for _, row in signals_today.iterrows():
-        if row['prediction'] == -1 and row['stock_id'] in holdings:
-            shares_to_sell = holdings.pop(row['stock_id']) # 賣出全部
-            cash += shares_to_sell * row['price']
-            # print(f"{date.date()}: SELL {row['stock_id']} at {row['price']:.2f}")
+    for stock_id in stocks_with_signals_today:
+        signal = signals_dict.get((date, stock_id))
+        if signal == -1 and holdings.get(stock_id, 0) > 0:
+            price = price_pivot.loc[date, stock_id]
+            if pd.notna(price):
+                shares_to_sell = holdings[stock_id]
+                cash += shares_to_sell * price
+                holdings[stock_id] = 0
 
-    # 買入操作 (簡單起見，平均分配當前現金給所有買入訊號)
-    buy_signals = signals_today[signals_today['prediction'] == 1]
-    if not buy_signals.empty and cash > 0:
-        cash_per_buy = cash / len(buy_signals)
-        for _, row in buy_signals.iterrows():
-            if row['stock_id'] not in holdings: # 如果尚未持有，才買入
-                if row['price'] > 0:
-                    shares_to_buy = cash_per_buy // row['price']
-                if shares_to_buy > 0:
-                    holdings[row['stock_id']] = shares_to_buy
-                    cash -= shares_to_buy * row['price']
-                    # print(f"{date.date()}: BUY {row['stock_id']} at {row['price']:.2f}")
+    # 買入操作 (平均分配現金)
+    buy_signals_stocks = [s_id for s_id in stocks_with_signals_today if signals_dict.get((date, s_id)) == 1]
+    if buy_signals_stocks and cash > 0:
+        cash_per_buy = cash / len(buy_signals_stocks)
+        for stock_id in buy_signals_stocks:
+            if holdings.get(stock_id, 0) == 0: # 尚未持有才買入
+                price = price_pivot.loc[date, stock_id]
+                if pd.notna(price) and price > 0:
+                    shares_to_buy = cash_per_buy // price
+                    if shares_to_buy > 0:
+                        holdings[stock_id] = shares_to_buy
+                        cash -= shares_to_buy * price
 
-final_model_value = portfolio_values[-1]
+# --- 5. 計算最終資產價值 (Bug 修正) ---
+# 使用最後一天的價格，計算最終資產
+final_cash = cash
+final_holdings_value = 0
+last_date = test_dates[-1]
+for stock_id, shares in holdings.items():
+    price = price_pivot.loc[last_date, stock_id]
+    if pd.isna(price):
+        last_valid_price = price_pivot[stock_id].loc[:last_date].last_valid_index()
+        if last_valid_price is not None:
+            price = price_pivot.loc[last_valid_price, stock_id]
+    
+    if pd.notna(price):
+        final_holdings_value += shares * price
+final_model_value = final_cash + final_holdings_value
 
 # --- 步驟 5: 基準策略回測 (Buy and Hold) ---
 print("[INFO] Calculating Buy and Hold benchmark...")
-benchmark_cash = initial_cash
-stock_universe = data['stock_id'].unique()
-cash_per_stock = benchmark_cash / len(stock_universe)
+# 【修正點 6】: 使用小寫的 'close'
+original_data = pd.read_csv("data/final_data_multi_enhanced.csv", index_col="date", parse_dates=True)
+stock_universe = original_data["stock_id"].unique()
+cash_per_stock = initial_cash / len(stock_universe)
 benchmark_holdings = {}
 
-first_day_prices = data.loc[test_dates[0]].set_index('stock_id')['Close']
+first_day_prices = original_data.loc[test_dates[0]].set_index("stock_id")["close"]
 for stock_id in stock_universe:
     price = first_day_prices.get(stock_id)
-    if price:
-        shares_to_buy = cash_per_stock // price
-        benchmark_holdings[stock_id] = shares_to_buy
+    if price and price > 0:
+        benchmark_holdings[stock_id] = cash_per_stock // price
 
-last_day_prices = data.loc[test_dates[-1]].set_index('stock_id')['Close']
+last_day_prices = original_data.loc[test_dates[-1]].set_index("stock_id")["close"]
 final_benchmark_value = 0
 for stock_id, shares in benchmark_holdings.items():
-     price = last_day_prices.get(stock_id)
-     if price:
+    price = last_day_prices.get(stock_id)
+    if price:
         final_benchmark_value += shares * price
 
 # --- 步驟 6: 輸出最終結果 ---
+# ... (與您版本相同的輸出程式碼) ...
 print("\n--- Backtest Results ---")
 print(f"Test Period: {test_dates[0].date()} to {test_dates[-1].date()}")
-
 model_return = (final_model_value / initial_cash - 1) * 100
 benchmark_return = (final_benchmark_value / initial_cash - 1) * 100
-
 print(f"\n[AI Model Strategy]")
 print(f"  - Initial Portfolio Value: {initial_cash:,.2f}")
 print(f"  - Final Portfolio Value:   {final_model_value:,.2f}")
 print(f"  - Total Return:            {model_return:.2f}%")
-
 print(f"\n[Benchmark: Buy and Hold]")
 print(f"  - Initial Portfolio Value: {initial_cash:,.2f}")
 print(f"  - Final Portfolio Value:   {final_benchmark_value:,.2f}")
 print(f"  - Total Return:            {benchmark_return:.2f}%")
-
 print("\n--- CONCLUSION ---")
 if model_return > benchmark_return:
     print("Congratulations! The AI model strategy successfully outperformed the Buy and Hold benchmark.")

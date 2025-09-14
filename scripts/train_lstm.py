@@ -7,6 +7,9 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import classification_report
 from sklearn.utils.class_weight import compute_class_weight
+from torch.utils.data import DataLoader, TensorDataset
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+from scripts.model import LSTMModel
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"[INFO] Using device: {device}")
@@ -30,8 +33,14 @@ def create_sequences_grouped(data, features_cols, labels_col, seq_length):
 # --- 數據準備 ---
 print("[INFO] Loading and preparing data for LSTM...")
 
-data = pd.read_csv('data/final_data_multi.csv', index_col='date', parse_dates=True)
-features_cols = ['SMA_10', 'SMA_20', 'RSI_14', 'MACD_12_26_9', 'MACDh_12_26_9', 'MACDs_12_26_9']
+data = pd.read_csv('data/final_data_multi_enhanced.csv', index_col='date', parse_dates=True)
+features_cols = [
+    'SMA_10', 'SMA_20', 'RSI_14', 
+    'MACD_12_26_9', 'MACDh_12_26_9', 'MACDs_12_26_9',
+    'BBL_20_2.0_2.0', 'BBM_20_2.0_2.0', 'BBU_20_2.0_2.0', 'BBB_20_2.0_2.0', 'BBP_20_2.0_2.0', # <-- 修正了這裡
+    'OBV', 
+    'TAIEX_return'
+]
 target_col = 'target'
 
 # 特徵縮放 (與 MLP 相同)
@@ -46,55 +55,50 @@ X, y = create_sequences_grouped(data, features_cols, 'target', sequence_length)
 y = y + 1
 
 # 切分數據集
-print("[INFO] Splitting data chronologically...")
-split_ratio = 0.8
-split_point = int(len(X) * split_ratio)
+# --- 【修改點 1】: 三向數據分割 (訓練集/驗證集/測試集) ---
+print("[INFO] Splitting data into train, validation, and test sets...")
 
-X_train, X_test = X[:split_point], X[split_point:]
-y_train, y_test = y[:split_point], y[split_point:]
+# 我們採用 70% 訓練, 15% 驗證, 15% 測試的時序分割
+train_split_point = int(len(X) * 0.70)
+val_split_point = int(len(X) * 0.85)
+
+X_train, X_val, X_test = X[:train_split_point], X[train_split_point:val_split_point], X[val_split_point:]
+y_train, y_val, y_test = y[:train_split_point], y[train_split_point:val_split_point], y[val_split_point:]
 
 print(f"  - Training set size: {len(X_train)}")
-print(f"  - Testing set size: {len(X_test)}")
+print(f"  - Validation set size: {len(X_val)}")
+print(f"  - Test set size: {len(X_test)}")
 
 # 轉換為 PyTorch Tensors
 X_train_tensor = torch.FloatTensor(X_train).to(device)
 y_train_tensor = torch.LongTensor(y_train).to(device)
+X_val_tensor = torch.FloatTensor(X_val).to(device)
+y_val_tensor = torch.LongTensor(y_val).to(device)
 X_test_tensor = torch.FloatTensor(X_test).to(device)
 y_test_tensor = torch.LongTensor(y_test).to(device)
 
 # --- LSTM 基礎 2: 定義 LSTM 模型架構 ---
 print("[INFO] Defining the LSTM model architecture...")
 
-class LSTMModel(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, num_classes):
-        super(LSTMModel, self).__init__()
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        
-        # LSTM 層：它會處理時間序列數據
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=0.2)
-        
-        # 全連接層：將 LSTM 最後的輸出，轉換為我們的 3 個分類
-        self.fc = nn.Linear(hidden_size, num_classes)
-
-    def forward(self, x):
-        # 初始化 LSTM 的隱藏狀態和細胞狀態
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
-        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
-        
-        # 將數據傳遞給 LSTM 層
-        out, _ = self.lstm(x, (h0, c0))
-        
-        # 我們只取序列中「最後一個時間點」的輸出來做預測
-        out = self.fc(out[:, -1, :])
-        return out
 
 # 實例化模型
 input_size = len(features_cols)  # 每個時間點的特徵數 (6)
-hidden_size = 50                 # LSTM 記憶單元的大小 (可調超參數)
-num_layers = 2                   # 堆疊 2 層 LSTM (可調超參數)
+hidden_size = 128                 # LSTM 記憶單元的大小 (可調超參數)
+num_layers = 3                   # 堆疊 3 層 LSTM (可調超參數)
 num_classes = 3                  # 輸出類別數
-model = LSTMModel(input_size, hidden_size, num_layers, num_classes)
+batch_size = 64
+dropout_rate = 0.3
+
+train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True) # 訓練集需要打亂
+
+val_dataset = TensorDataset(X_val_tensor, y_val_tensor)
+val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
+test_dataset = TensorDataset(X_test_tensor, y_test_tensor)
+test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
+model = LSTMModel(input_size, hidden_size, num_layers, num_classes, dropout_rate)
 model.to(device)
 
 # --- 損失函數 (帶權重) 與優化器 ---
@@ -102,45 +106,100 @@ print("[INFO] Defining loss function with class weights and optimizer...")
 class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
 class_weights_tensor = torch.tensor(class_weights, dtype=torch.float).to(device)
 criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
-optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
+scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10)
 
 # --- 訓練模型 ---
-print("[INFO] Starting model training...")
-epochs = 1800 # LSTM 通常收斂得更快，我們先用 200 次
+# --- 【修改點 3】: 採用提早停止的訓練迴圈 ---
+print("[INFO] Starting model training with Early Stopping...")
+epochs = 500 # Mini-batch 訓練通常收斂更快
+patience = 25
+patience_counter = 0
+best_val_loss = float('inf')
+best_model_path = 'model/best_lstm_model_pro.pth'
 
 for epoch in range(epochs):
     model.train()
-    outputs = model(X_train_tensor)
-    loss = criterion(outputs, y_train_tensor)
+    total_train_loss = 0
+    # --- 【修改點】: Mini-batch 訓練迴圈 ---
+    for data, target in train_loader:
+        outputs = model(data)
+        loss = criterion(outputs, target)
+        
+        optimizer.zero_grad()
+        loss.backward()
+        # --- 【新引入】: 梯度裁剪 ---
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        optimizer.step()
+        total_train_loss += loss.item()
     
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
+    avg_train_loss = total_train_loss / len(train_loader)
+
+    # 驗證步驟
+    model.eval()
+    total_val_loss = 0
+    with torch.no_grad():
+        for data, target in val_loader:
+            val_outputs = model(data)
+            val_loss = criterion(val_outputs, target)
+            total_val_loss += val_loss.item()
+
+    avg_val_loss = total_val_loss / len(val_loader)
     
-    if (epoch + 1) % 50 == 0:
-        print(f'Epoch [{epoch+1}/{epochs}], Loss: {loss.item():.4f}')
+    # 更新學習率
+    scheduler.step(avg_val_loss)
+
+    if (epoch + 1) % 10 == 0:
+        print(f'Epoch [{epoch+1}/{epochs}], Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}')
+    
+    # 提早停止邏輯
+    if avg_val_loss < best_val_loss:
+        best_val_loss = avg_val_loss
+        patience_counter = 0
+        torch.save(model.state_dict(), best_model_path)
+    else:
+        patience_counter += 1
+    
+    if patience_counter >= patience:
+        print(f'Early stopping triggered after {epoch + 1} epochs.')
+        break
 
 print("[SUCCESS] Model training completed.")
 
-# --- 評估模型 ---
-print("\n[INFO] Evaluating model on the test set...")
-model.eval()
-with torch.no_grad():
-    outputs = model(X_test_tensor)
-    _, predicted = torch.max(outputs.data, 1)
-    
-    accuracy = (predicted == y_test_tensor).sum().item() / len(y_test_tensor)
-    print(f"\n  - Accuracy: {accuracy:.4f}")
-    
-    print("\n  - Classification Report:")
-    y_pred_np = predicted.cpu().numpy()
-    y_test_np = y_test_tensor.cpu().numpy()
-    print(classification_report(y_test_np, y_pred_np, target_names=['Sell (-1)', 'Hold (0)', 'Buy (1)']))
+# --- 【修改點】: 採用與 DataLoader 兼容的評估流程 ---
+print("\n[INFO] Loading best model and evaluating on the test set...")
 
-# --- 保存模型 ---
-print("\n[INFO] Saving the trained model to model/lstm_multi_stock.pth...")
-# 我們只保存模型的「狀態字典 (state_dict)」，這是最高效的方式
-if not os.path.exists('model'):
-    os.makedirs('model')
-torch.save(model.state_dict(), 'model/lstm_multi_stock.pth')
-print("[SUCCESS] Model saved.")
+# 載入在驗證集上表現最好的模型
+# 確保模型架構定義與保存時一致
+model = LSTMModel(input_size=len(features_cols), hidden_size=hidden_size, num_layers=num_layers, num_classes=num_classes, dropout_rate=dropout_rate).to(device)
+model.load_state_dict(torch.load(best_model_path))
+model.eval()
+
+# 儲存所有批次的預測和真實標籤
+all_predictions = []
+all_targets = []
+
+with torch.no_grad():
+    # 遍歷測試數據的每一個批次
+    for data, target in test_loader:
+        # 將預測結果和真實標籤加入列表
+        outputs = model(data)
+        _, predicted = torch.max(outputs.data, 1)
+        all_predictions.append(predicted)
+        all_targets.append(target)
+
+# 將列表中所有批次的 tensor 合併成一個大的 tensor
+all_predictions = torch.cat(all_predictions)
+all_targets = torch.cat(all_targets)
+
+# 一次性計算最終的評估指標
+accuracy = (all_predictions == all_targets).sum().item() / len(all_targets)
+print(f"\n  - Accuracy: {accuracy:.4f}")
+
+print("\n  - Classification Report:")
+y_pred_np = all_predictions.cpu().numpy()
+y_test_np = all_targets.cpu().numpy()
+print(classification_report(y_test_np, y_pred_np, target_names=['Sell (-1)', 'Hold (0)', 'Buy (1)']))
+
+# 腳本結尾處不再需要保存模型，因為最好的模型已經在訓練迴圈中保存了
+print(f"\n[INFO] Best model was saved to {best_model_path} during training.")

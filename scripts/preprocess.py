@@ -5,51 +5,89 @@ from FinMind.data import DataLoader
 import pandas_ta as ta
 import numpy as np
 
-# 1. 定義我們的股票池 (以幾家台灣大型電子股為例)
-#    yfinance 的 Ticker 需要加上 .TW
-stock_universe = ["2330", "2454", "2317", "2308"] # 台積電, 聯發科, 鴻海, 台達電
+# 1. 定義股票池
+stock_universe = ["2330", "2454", "2317", "2308"]
 print(f"[INFO] Stock Universe: {stock_universe}")
 
-all_stock_data = []
 dl = DataLoader()
 
-# 2. 迴圈下載所有股票數據
+# 2. 【新增】下載台灣加權指數(TAIEX)數據
+print("[INFO] Downloading TAIEX data for market context...")
+taiex_data = dl.taiwan_stock_daily(stock_id="TAIEX", start_date="2020-01-01")
+# 計算大盤每日報酬率，並重新命名，以便合併
+taiex_data['TAIEX_return'] = taiex_data['close'].pct_change()
+taiex_data.reset_index(inplace=True)
+taiex_data['date'] = pd.to_datetime(taiex_data['date'])
+taiex_data = taiex_data[['date', 'TAIEX_return']]
+
+
+
+# 3. 迴圈下載所有股票數據並合併
+all_stock_data = []
 for stock_id in stock_universe:
     print(f"[INFO] Downloading data for {stock_id}...")
     stock_data = dl.taiwan_stock_daily(stock_id=stock_id, start_date="2020-01-01")
     all_stock_data.append(stock_data)
-
-# 3. 將所有數據合併成一個大的 DataFrame
-print("[INFO] Concatenating all stock data...")
 data = pd.concat(all_stock_data, ignore_index=True)
-data.set_index(['stock_id', 'date'], inplace=True)
+data['date'] = pd.to_datetime(data['date'])
 
-# --- 以下是關鍵改造點 ---
+# 4. 【新增】將大盤數據合併到我們的主數據中
+print("[INFO] Merging TAIEX data with stock data...")
+data = pd.merge(data, taiex_data, on='date', how='left')
+data.set_index('date', inplace=True)
 
-# 4. 分組計算技術指標
-#    我們必須確保每支股票的技術指標是獨立計算的，避免鴻海的數據去計算台積電的均線
-print("[INFO] Calculating features for each stock...")
-data.rename(columns={'max': 'High', 'min': 'Low', 'open': 'Open', 'close': 'Close', 'Trading_Volume': 'Volume'}, inplace=True)
-# 使用 groupby('stock_id')
-data['SMA_10'] = data.groupby('stock_id')['Close'].transform(lambda x: ta.sma(x, length=10))
-data['SMA_20'] = data.groupby('stock_id')['Close'].transform(lambda x: ta.sma(x, length=20))
-data['RSI_14'] = data.groupby('stock_id')['Close'].transform(lambda x: ta.rsi(x, length=14))
-# pandas-ta 的 macd 比較特別，需要這樣處理
-macd_df = data.groupby('stock_id', group_keys=False).apply(lambda x: x.ta.macd(append=True))
-data = data.join(macd_df[['MACD_12_26_9', 'MACDh_12_26_9', 'MACDs_12_26_9']])
 
-# 5. 分組生成標籤
+# ---【新的步驟 5】: 標準化欄位名稱並計算特徵 ---
+print("[INFO] Standardizing column names and calculating features...")
+
+# 【修改點】統一將欄位名改為 pandas-ta 偏好的全小寫格式
+data.rename(columns={
+    'max': 'high',
+    'min': 'low',
+    'open': 'open', # 保持小寫
+    'close': 'close', # 保持小寫
+    'Trading_Volume': 'volume'
+}, inplace=True)
+
+processed_groups = []
+for stock_id, group in data.groupby('stock_id'):
+    group = group.copy()
+    
+    group.ta.sma(length=10, append=True)
+    group.ta.sma(length=20, append=True)
+    group.ta.rsi(length=14, append=True)
+    group.ta.macd(append=True)
+    group.ta.bbands(length=20, append=True)
+    group.ta.obv(append=True)
+    
+    # --- 【新增除錯程式碼】 ---
+    print(f"\n--- Debugging columns for stock_id: {stock_id} ---")
+    print(list(group.columns))
+    # --- 結束除錯程式碼 ---
+
+    processed_groups.append(group)
+
+print("[INFO] Combining processed groups...")
+data_with_features = pd.concat(processed_groups)
+
+
+# ---【新的步驟 6】: 分組生成標籤 ---
 print("[INFO] Generating labels for each stock...")
 future_days = 5
 price_change_threshold = 0.02
-data['future_change'] = data.groupby('stock_id')['Close'].transform(lambda x: x.shift(-future_days) / x - 1)
-# ... (生成 target 的 np.select 程式碼不變) ...
-conditions = [data['future_change'] > price_change_threshold, data['future_change'] < -price_change_threshold]
-choices = [1, -1]
-data['target'] = np.select(conditions, choices, default=0)
 
-# 6. 清理數據並儲存
-final_data = data.dropna()
-print("\n[INFO] Saving final processed multi-stock data...")
-final_data.to_csv('data/final_data_multi.csv')
-print("[SUCCESS] Multi-stock data saved.")
+# 【修改點】這裡也使用小寫的 'close'
+data_with_features['future_change'] = data_with_features.groupby('stock_id')['close'].transform(lambda x: x.shift(-future_days) / x - 1)
+conditions = [
+    data_with_features['future_change'] > price_change_threshold,
+    data_with_features['future_change'] < -price_change_threshold
+]
+choices = [1, -1]
+data_with_features['target'] = np.select(conditions, choices, default=0)
+
+
+# ---【新的步驟 7】: 清理數據並儲存 ---
+final_data = data_with_features.dropna()
+print("\n[INFO] Saving final processed multi-stock data with new features...")
+final_data.to_csv('data/final_data_multi_enhanced.csv')
+print("[SUCCESS] Enhanced multi-stock data saved.")
