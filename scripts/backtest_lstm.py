@@ -38,12 +38,16 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # 【修正點 3】: 讀取帶有增強特徵的數據檔案
 data = pd.read_csv("data/final_data_multi_enhanced.csv", index_col="date", parse_dates=True)
+# --- 【修改點】: 根據特徵重要性分析，篩選出 Top 10 特徵 ---
 features_cols = [
-    'SMA_10', 'SMA_20', 'RSI_14', 
-    'MACD_12_26_9', 'MACDh_12_26_9', 'MACDs_12_26_9',
-    'BBL_20_2.0_2.0', 'BBM_20_2.0_2.0', 'BBU_20_2.0_2.0', 'BBB_20_2.0_2.0', 'BBP_20_2.0_2.0',
-    'OBV', 
-    'TAIEX_return'
+    'BBU_20_2.0_2.0', 'BBL_20_2.0_2.0', # Top 2: 波動率
+    'SMA_20', 'SMA_10',                 # Top 4: 趨勢
+    'OBV',                              # Top 5: 價量
+    'MACDs_12_26_9',                    # MACD 訊號線
+    'BBB_20_2.0_2.0',                   # 布林帶寬度
+    'MACD_12_26_9',                     # MACD 主線
+    'MACDh_12_26_9',                    # MACD 柱狀圖
+    'RSI_14',                           # 相對強弱指標
 ]
 target_col = "target"
 

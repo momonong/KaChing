@@ -1,73 +1,43 @@
-# In scripts/evaluate_xgb.py
+# In scripts/backtest_xgb.py
 
 import pandas as pd
-import xgboost as xgb
-from sklearn.metrics import classification_report
-from utils.random_seed import set_seed
+import joblib
 
-SEED = 42
-set_seed(SEED)
-print(f"[INFO] Random seed set to {SEED}")
+# --- 主要執行流程 ---
+if __name__ == '__main__':
+    print("[INFO] Loading data for backtest...")
+    data = pd.read_csv('data/final_data_multi_enhanced.csv', index_col='date', parse_dates=True)
+    features_cols = [
+        'BBU_20_2.0_2.0', 'BBL_20_2.0_2.0', 'SMA_20', 'SMA_10', 'OBV',
+        'MACDs_12_26_9', 'BBB_20_2.0_2.0', 'MACD_12_26_9', 'MACDh_12_26_9', 'RSI_14'
+    ]
+    target_col = 'target'
+    X = data[features_cols]
 
-# --- 步驟 2: 載入與分割數據 ---
-print("[INFO] Loading enhanced multi-stock data...")
-data = pd.read_csv('data/final_data_multi_enhanced.csv', index_col='date', parse_dates=True)
+    # 獲取與訓練時完全一致的測試集
+    split_point = int(len(X) * 0.7)
+    X_test = X.iloc[split_point:]
+    
+    # 載入模型
+    print("[INFO] Loading pre-trained LGBoost model...")
+    model = joblib.load('model/lgb_model_final.joblib')
 
-features_cols = [
-    'BBU_20_2.0_2.0', 'BBL_20_2.0_2.0', 'SMA_20', 'SMA_10', 'OBV',
-    'MACDs_12_26_9', 'BBB_20_2.0_2.0', 'MACD_12_26_9', 'MACDh_12_26_9', 'RSI_14'
-] # 我們使用之前分析出的 Top 10 特徵
-target_col = 'target'
+    # 獲取模型預測
+    print("[INFO] Getting model predictions...")
+    y_pred = model.predict(X_test)
 
-X = data[features_cols]
-y = data[target_col]
+    # 準備回測數據
+    info_test = data.iloc[split_point:][['stock_id', 'close']].copy()
+    info_test['prediction'] = y_pred - 1
+    info_test.rename(columns={'close': 'price'}, inplace=True)
+    info_test.reset_index(inplace=True)
+    
+    # 執行回測 (與 evaluate_lgb.py 腳本中的回測邏輯完全相同)
+    print("[INFO] Starting backtest simulation...")
+    # ... (此處省略，請將 evaluate_lgb.py 中完整的、精確的回測與基準測試程式碼複製到這裡) ...
+    # 從 initial_cash = 1000000 開始，一直到最後的 print CONCLUSION
 
-# 採用嚴謹的時序分割 (70% 訓練, 30% 測試)
-print("[INFO] Splitting data chronologically...")
-split_point = int(len(X) * 0.7)
-X_train, X_test = X.iloc[:split_point], X.iloc[split_point:]
-y_train, y_test = y.iloc[:split_point], y.iloc[split_point:]
-
-print(f"  - Training set size: {len(X_train)}")
-print(f"  - Test set size: {len(X_test)}")
-
-# --- 步驟 3: 訓練 XGBoost 模型 ---
-print("[INFO] Training XGBoost model...")
-# XGBoost 的標籤需要從 0 開始，所以我們 +1
-y_train_mapped = y_train + 1
-y_test_mapped = y_test + 1
-
-model = xgb.XGBClassifier(
-    objective='multi:softmax', 
-    num_class=3, 
-    eval_metric='mlogloss', 
-    use_label_encoder=False, 
-    random_state=SEED,
-    n_estimators=300, # 增加樹的數量
-    max_depth=5,      # 限制樹的深度以防過擬合
-    learning_rate=0.1 # 學習率
-)
-model.fit(X_train, y_train_mapped)
-print("[SUCCESS] Model training completed.")
-
-# --- 步驟 4: 分類準確率評估 ---
-print("\n[INFO] Evaluating model classification performance...")
-y_pred = model.predict(X_test)
-
-print("\n  - Classification Report:")
-print(classification_report(y_test_mapped, y_pred, target_names=['Sell (-1)', 'Hold (0)', 'Buy (1)']))
-
-# --- 步驟 5: 執行回測 ---
-print("\n[INFO] Starting backtest simulation...")
-
-# 準備回測所需的 info DataFrame
-info_test = data.iloc[split_point:][['stock_id', 'close']].copy()
-info_test['prediction'] = y_pred - 1 # 將預測結果 (0,1,2) 轉回 (-1,0,1)
-info_test.rename(columns={'close': 'price'}, inplace=True)
-info_test.reset_index(inplace=True)
-
-# ... (此處的回測邏輯與我們修正後的 backtest.py 完全相同) ...
-initial_cash = 1000000
+    initial_cash = 1000000
 price_pivot = data.pivot_table(index='date', columns='stock_id', values='close')
 signals_dict = { (row['date'], row['stock_id']): row['prediction'] for _, row in info_test.iterrows() }
 cash = initial_cash
@@ -163,11 +133,12 @@ for stock_id, shares in benchmark_holdings.items():
     # 如果最後一天該股票未交易，則其持有價值視為零
 
 final_benchmark_value = remaining_cash + final_holdings_value
+
 # --- 步驟 6: 輸出最終結果 ---
-print("\n--- XGBoost Final Evaluation ---")
+print("\n--- LGBoost Final Evaluation ---")
 model_return = (final_model_value / initial_cash - 1) * 100
 benchmark_return = (final_benchmark_value / initial_cash - 1) * 100
-print(f"\n[AI Model Strategy (XGBoost)]")
+print(f"\n[AI Model Strategy (LGBoost)]")
 print(f"  - Final Portfolio Value:   {final_model_value:,.2f}")
 print(f"  - Total Return:            {model_return:.2f}%")
 print(f"\n[Benchmark: Buy and Hold]")
