@@ -1,5 +1,5 @@
 # In scripts/backtest.py
-
+import math
 import pandas as pd
 import numpy as np
 import torch
@@ -32,20 +32,44 @@ def create_sequences_grouped(data, features_cols, labels_col, seq_length):
             })
     return np.array(xs), np.array(ys), pd.DataFrame(info)
 
-class LSTMModel(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, num_classes):
-        super(LSTMModel, self).__init__()
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=0.2)
-        self.fc = nn.Linear(hidden_size, num_classes)
+class PositionalEncoding(nn.Module):
+    # ... (請將完整的 class 內容貼在這裡) ...
+    def __init__(self, d_model, dropout=0.1, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, 1, d_model)
+        pe[:, 0, 0::2] = torch.sin(position * div_term)
+        pe[:, 0, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
 
     def forward(self, x):
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
-        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
-        out, _ = self.lstm(x, (h0, c0))
-        out = self.fc(out[:, -1, :])
-        return out
+        x = x + self.pe[:x.size(0)]
+        return self.dropout(x)
+
+class TransformerModel(nn.Module):
+    # ... (請將完整的 class 內容貼在這裡) ...
+    def __init__(self, input_size, d_model, nhead, num_encoder_layers, num_classes, dropout=0.5):
+        super(TransformerModel, self).__init__()
+        self.model_type = 'Transformer'
+        self.src_mask = None
+        self.input_fc = nn.Linear(input_size, d_model)
+        self.pos_encoder = PositionalEncoding(d_model, dropout)
+        encoder_layers = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dropout=dropout, batch_first=True)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layers, num_layers=num_encoder_layers)
+        self.d_model = d_model
+        self.classifier = nn.Linear(d_model, num_classes)
+
+    def forward(self, src):
+        src = self.input_fc(src)
+        src = src.permute(1, 0, 2)
+        src = self.pos_encoder(src)
+        src = src.permute(1, 0, 2)
+        output = self.transformer_encoder(src, self.src_mask)
+        output = output.mean(dim=1)
+        output = self.classifier(output)
+        return output
 
 # --- 步驟 2: 載入數據和模型 ---
 print("[INFO] Setting up environment and loading data...")
@@ -88,13 +112,17 @@ print(f"  - Last training date: {train_last_date.date()}")
 print(f"  - First testing date: {test_first_date.date()}")
 
 # 載入模型
-print("[INFO] Loading pre-trained LSTM model...")
+print("[INFO] Loading pre-trained Transformer model...")
+# 【修改】使用 Transformer 的參數來實例化模型
 input_size = len(features_cols)
-hidden_size = 50
-num_layers = 2
+d_model = 64
+nhead = 8
+num_encoder_layers = 3
 num_classes = 3
-model = LSTMModel(input_size, hidden_size, num_layers, num_classes)
-model.load_state_dict(torch.load('model/lstm_multi_stock.pth'))
+model = TransformerModel(input_size, d_model, nhead, num_encoder_layers, num_classes)
+
+# 【修改】載入 Transformer 的權重檔案
+model.load_state_dict(torch.load('model/transformer_multi_stock.pth'))
 model.to(device)
 model.eval()
 
