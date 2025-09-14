@@ -88,7 +88,7 @@ print("[INFO] Defining the LSTM model architecture...")
 # 實例化模型
 input_size = len(features_cols)  # 每個時間點的特徵數 (6)
 hidden_size = 128                 # LSTM 記憶單元的大小 (可調超參數)
-num_layers = 3                   # 堆疊 3 層 LSTM (可調超參數)
+num_layers = 1                   # 堆疊 3 層 LSTM (可調超參數)
 num_classes = 3                  # 輸出類別數
 batch_size = 64
 dropout_rate = 0.3

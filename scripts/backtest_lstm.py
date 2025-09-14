@@ -81,7 +81,7 @@ print(f"  - Backtest starts from {test_first_date.date()}.")
 print("[INFO] Loading pre-trained LSTM model...")
 # --- 【修正點 2】: 使用與我們最新訓練的模型完全一致的超參數 ---
 # 這是我們 train_lstm_advanced.py 中使用的參數
-model = LSTMModel(input_size=len(features_cols), hidden_size=128, num_layers=3, num_classes=3, dropout_rate=0.3)
+model = LSTMModel(input_size=len(features_cols), hidden_size=128, num_layers=1, num_classes=3, dropout_rate=0.3)
 # 載入我們用專業流程訓練出的最佳模型
 # 注意：這裡假設您要回測的是 advanced 版本的模型
 model.load_state_dict(torch.load("model/best_lstm_model_pro.pth"))
